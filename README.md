@@ -32,24 +32,27 @@ lifecycle, challenge detection, timeouts, and a narrow HTTP surface.
 ```mermaid
 flowchart TB
     caller["your application"]
-    subgraph minter["minter"]
+
+    subgraph svc["minter"]
         api["FastAPI<br/>/fetch · /mint · /health"]
-        lock["asyncio.Lock<br/>one browser at a time"]
-        solve["challenge detection<br/>+ clearance wait"]
+        gate["asyncio.Lock<br/>one browser at a time"]
+        detect["challenge detection<br/>+ clearance wait"]
     end
-    subgraph browser["browser (per request)"]
+
+    subgraph brw["browser (per request)"]
         ff["patched Firefox 151<br/>~200 seed-derived fingerprint fields"]
-        click["ClickSolver<br/>(lazy — fallback only)"]
+        solver["ClickSolver<br/>lazy — fallback only"]
     end
-    site["Cloudflare-protected site"]
+
+    target["Cloudflare-protected site"]
 
     caller -->|"POST /fetch"| api
-    api --> lock
-    lock --> solve
-    solve --> ff
-    solve -.->|"only if waiting stalls"| click
-    ff <-->|"navigate, run challenge JS"| site
-    solve -->|"html + cookies + user_agent"| caller
+    api --> gate
+    gate --> detect
+    detect --> ff
+    detect -.->|"only if waiting stalls"| solver
+    ff <-->|"navigate, run challenge JS"| target
+    detect -->|"html + cookies + user_agent"| caller
 ```
 
 ### The request flow
@@ -64,25 +67,25 @@ sequenceDiagram
     participant C as caller
     participant M as minter
     participant B as Firefox
-    participant CF as site + Cloudflare
+    participant S as site behind Cloudflare
 
-    C->>M: POST /fetch {url}
+    C->>M: POST /fetch with url
     M->>M: acquire lock, start timeout budget
     M->>B: launch browser
 
-    Note over M,CF: deep links need a warm-up first
-    B->>CF: GET site root
-    CF-->>B: interstitial
+    Note over M,S: deep links need a warm-up first
+    B->>S: GET site root
+    S-->>B: interstitial
     B->>B: run challenge JS
-    CF-->>B: cf_clearance + real page
+    S-->>B: cf_clearance and real page
 
-    B->>CF: GET target (with referer)
-    CF-->>B: page
+    B->>S: GET target, with referer
+    S-->>B: page
 
     M->>M: poll until cf_chl_opt marker is gone
     M->>M: wait for load, capture html
     M->>B: tear down
-    M-->>C: {html, cookies, user_agent, solved}
+    M-->>C: html, cookies, user_agent, solved
 ```
 
 ### Why the browser runs per request
