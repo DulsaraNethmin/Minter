@@ -1,0 +1,22 @@
+services:
+  minter:
+    build: .
+    image: minter:latest
+    container_name: minter
+    restart: unless-stopped
+
+    environment:
+      LOG_LEVEL: INFO
+      MAX_ATTEMPTS: 5
+      DEFAULT_TIMEOUT: 60
+      BLOCK_MEDIA: "true"
+      # BROWSER_LOCALE defaults to "auto", deriving from the exit IP. A locale that
+      # disagrees with the exit IP is itself a detection signal.
+
+    # Published only for local development. On the Pi this is removed — nothing
+    # outside the `media` network should reach a browser-driving endpoint.
+    ports:
+      - "8191:8191"
+
+    # Firefox needs more than Docker's default 64 MB of shared memory.
+    shm_size: 512mb

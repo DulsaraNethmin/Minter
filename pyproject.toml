@@ -1,0 +1,47 @@
+[project]
+name = "minter"
+version = "0.1.0"
+description = "Mints Cloudflare clearance cookies. Replaces flaresolverr and byparr."
+readme = "README.md"
+requires-python = "==3.14.*"
+
+dependencies = [
+    "fastapi[standard]>=0.141",
+    # The load-bearing dependency: ships a C++-patched Firefox whose fingerprints
+    # are compiled into the engine rather than injected into the page.
+    "invisible-playwright>=0.6.1",
+    "playwright>=1.60",
+    "playwright-captcha>=0.1",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+    "httpx>=0.28",
+    "ruff>=0.16",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/minter"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "live: hits the real 1337x and launches a browser (deselect with -m 'not live')",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
+# ASYNC109: our `timeout` parameters are wall-clock budgets handed to Playwright,
+# not cancellation scopes. asyncio.timeout would not replace them.
+ignore = ["ASYNC109"]
