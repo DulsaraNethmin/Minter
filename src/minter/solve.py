@@ -1,3 +1,5 @@
+
+
 """Challenge detection, solving, and cookie extraction.
 
 Cloudflare's non-interactive interstitial clears *itself* once the browser executes
@@ -7,14 +9,17 @@ clearance, and reach for the ClickSolver only if waiting stalls.
 """
 
 import asyncio
+import contextlib
+from urllib.parse import urlparse
 
 from playwright.async_api import BrowserContext, Page
+from playwright.async_api import Error as PlaywrightError
 from playwright_captcha import CaptchaType
 from playwright_captcha.utils.exceptions import CaptchaDetectionError
 
-from minter.browser import Budget, session
+from minter.browser import Budget, click_solver, session
 from minter.config import configure_logging
-from minter.models import Cookie, MintResponse
+from minter.models import Cookie, FetchResponse, MintResponse
 
 logger = configure_logging()
 
@@ -22,6 +27,9 @@ logger = configure_logging()
 _PASSIVE_WAIT_S = 12.0
 # Poll interval while watching for the clearance cookie.
 _POLL_S = 0.5
+# Bounded wait after a click attempt. An unclearable challenge should fail fast
+# rather than consume the caller's whole budget.
+_POST_CLICK_WAIT_S = 15.0
 
 
 class NoClearanceError(RuntimeError):
@@ -62,24 +70,152 @@ async def detect_challenge(page: Page) -> bool:
     return False
 
 
-async def _has_clearance(context: BrowserContext) -> bool:
-    return any(c["name"] == "cf_clearance" for c in await context.cookies())
+def domain_matches(domain: str, host: str) -> bool:
+    """True when a cookie scoped to `domain` would be sent to `host`."""
+    d = domain.lstrip(".")
+    return host == d or host.endswith("." + d)
 
 
-async def _await_clearance(
-    page: Page, context: BrowserContext, budget: Budget, limit_s: float
-) -> bool:
-    """Poll until clearance appears, the interstitial disappears, or time runs out."""
+async def _has_clearance(context: BrowserContext, host: str) -> bool:
+    """True only when clearance exists *for the target host*.
+
+    Matching on name alone is a trap: a mint also picks up a cf_clearance scoped to
+    .cloudflare.com, which is useless for the site we came for. Accepting it makes
+    the wait below exit early — before the real cookie is issued — and produces an
+    apparently successful mint that fails on first use.
+    """
+    return any(
+        c["name"] == "cf_clearance" and domain_matches(c["domain"], host)
+        for c in await context.cookies()
+    )
+
+
+async def _await_clearance(page: Page, budget: Budget, limit_s: float) -> bool:
+    """Poll until the interstitial is gone — i.e. the real page has rendered.
+
+    Waiting on the cf_clearance cookie instead looks equivalent but is not: the
+    cookie is set *before* the interstitial finishes and hands over to the real
+    document. Navigating on the cookie therefore leaves the site half-way through
+    clearing, and the next request lands back on a challenge that never resolves.
+    The page title is the signal that the handover actually completed.
+    """
     deadline = min(limit_s, budget.remaining())
     waited = 0.0
     while waited < deadline:
-        if await _has_clearance(context):
-            return True
         if not await detect_challenge(page):
             return True
         await asyncio.sleep(_POLL_S)
         waited += _POLL_S
     return False
+
+
+def _watch_user_agent(page: Page) -> dict[str, str]:
+    """Capture the UA from the document request headers.
+
+    Reading it via `page.evaluate("navigator.userAgent")` fails outright on
+    CSP-strict sites ("call to eval() blocked by CSP"), so the header is the
+    reliable source and evaluate() is only a fallback.
+    """
+    seen: dict[str, str] = {}
+
+    def on_request(req) -> None:  # noqa: ANN001 - playwright Request
+        if "ua" not in seen and req.resource_type == "document":
+            ua = req.headers.get("user-agent")
+            if ua:
+                seen["ua"] = ua
+
+    page.on("request", on_request)
+    return seen
+
+
+async def _resolve_user_agent(page: Page, seen: dict[str, str]) -> str:
+    if ua := seen.get("ua"):
+        return ua
+    try:
+        return await page.evaluate("navigator.userAgent")
+    except Exception:  # noqa: BLE001 - CSP can block eval; the header path is primary
+        logger.warning("could not read user agent")
+        return ""
+
+
+async def _goto(page, url: str, budget: Budget, referer: str | None = None) -> None:
+    """Navigate, tolerating the challenge page reloading itself mid-navigation.
+
+    Cloudflare's interstitial re-navigates to the same URL as part of clearing, which
+    Playwright surfaces as "interrupted by another navigation". The navigation still
+    lands, so this is noise rather than failure.
+
+    `referer` matters for deep links: a bare goto sends none, so the request looks
+    like a cold deep-link hit even after the site root has been cleared.
+    """
+    kwargs = {"wait_until": "domcontentloaded", "timeout": budget.remaining_ms()}
+    if referer:
+        kwargs["referer"] = referer
+    try:
+        await page.goto(url, **kwargs)
+    except PlaywrightError as exc:
+        if "interrupted by another navigation" not in str(exc):
+            raise
+        logger.info("navigation self-redirected (challenge reload); continuing")
+        # The clearance poll below is the real check, so a missed load state is fine.
+        with contextlib.suppress(Exception):
+            await page.wait_for_load_state(
+                "domcontentloaded", timeout=min(20_000, budget.remaining_ms())
+            )
+
+
+async def _goto_and_clear(
+    page, url: str, budget: Budget, referer: str | None = None
+) -> bool:
+    """Navigate to `url` and clear any interstitial. Returns whether one was present."""
+    await _goto(page, url, budget, referer)
+
+    if not await detect_challenge(page):
+        logger.info("no challenge at %s", url)
+        return False
+
+    logger.info("interstitial at %s — waiting for it to clear", url)
+    if not await _await_clearance(page, budget, _PASSIVE_WAIT_S):
+        # Still stuck: this is likely the interactive variant, so try clicking.
+        logger.info("still challenged after %.0fs — trying ClickSolver", _PASSIVE_WAIT_S)
+        try:
+            async with click_solver(page) as solver:
+                await solver.solve_captcha(page, CaptchaType.CLOUDFLARE_INTERSTITIAL)
+        except CaptchaDetectionError:
+            # No iframe to click. Nothing more to do but keep waiting.
+            logger.info("no clickable widget present; continuing to wait")
+        except Exception:  # noqa: BLE001 - solver failure is not fatal on its own
+            logger.warning("ClickSolver failed; continuing to wait")
+
+        # Bounded, not "whatever is left" — an unclearable challenge should fail in
+        # seconds, not burn the caller's entire timeout budget.
+        await _await_clearance(page, budget, _POST_CLICK_WAIT_S)
+
+    if await detect_challenge(page):
+        logger.warning("gave up on %s — still showing the interstitial", url)
+    return True
+
+
+async def _open(page, url: str, budget: Budget) -> bool:
+    """Open `url`, warming up on the site root first when the target is a deep link.
+
+    Navigating cold straight to a deep path (e.g. /search/...) reliably gets an
+    interstitial that never clears, while the site root clears in a few seconds.
+    Landing on the root first and then following the link is both what a real user
+    does and what actually works.
+    """
+    parts = urlparse(url)
+    root = f"{parts.scheme}://{parts.netloc}/"
+
+    solved = False
+    referer = None
+    if parts.path not in ("", "/"):
+        logger.info("warming up on %s before %s", root, parts.path)
+        solved = await _goto_and_clear(page, root, budget)
+        referer = root
+
+    solved_target = await _goto_and_clear(page, url, budget, referer=referer)
+    return solved or solved_target
 
 
 async def mint(url: str, timeout: int) -> MintResponse:
@@ -89,39 +225,14 @@ async def mint(url: str, timeout: int) -> MintResponse:
     an empty success would be indistinguishable from a working mint to the caller.
     """
     budget = Budget(timeout)
+    host = urlparse(url).hostname or ""
 
-    async with session() as (page, solver, context):
-        await page.goto(
-            url,
-            wait_until="domcontentloaded",
-            timeout=budget.remaining_ms(),
-        )
-
-        solved = False
-        if await detect_challenge(page):
-            logger.info("interstitial at %s — waiting for it to clear", url)
-            solved = True
-
-            if not await _await_clearance(page, context, budget, _PASSIVE_WAIT_S):
-                # Still stuck: this is likely the interactive variant, so try clicking.
-                logger.info("still challenged after %.0fs — trying ClickSolver", _PASSIVE_WAIT_S)
-                try:
-                    await solver.solve_captcha(page, CaptchaType.CLOUDFLARE_INTERSTITIAL)
-                except CaptchaDetectionError:
-                    # No iframe to click. Nothing more to do but keep waiting.
-                    logger.info("no clickable widget present; continuing to wait")
-                except Exception:  # noqa: BLE001 - solver failure is not fatal on its own
-                    logger.exception("ClickSolver raised; continuing to wait")
-
-                await _await_clearance(page, context, budget, budget.remaining())
-
-            if not await _has_clearance(context):
-                logger.warning("gave up on %s without clearance", url)
-        else:
-            logger.info("no challenge at %s", url)
+    async with session() as (page, context):
+        seen_ua = _watch_user_agent(page)
+        solved = await _open(page, url, budget)
 
         raw_cookies = await context.cookies()
-        user_agent = await page.evaluate("navigator.userAgent")
+        user_agent = await _resolve_user_agent(page, seen_ua)
         final_url = page.url
 
     cookies = [
@@ -129,9 +240,10 @@ async def mint(url: str, timeout: int) -> MintResponse:
         for c in raw_cookies
     ]
 
-    if not any(c.name == "cf_clearance" for c in cookies):
+    if not any(c.name == "cf_clearance" and domain_matches(c.domain, host) for c in cookies):
         raise NoClearanceError(
-            f"no cf_clearance issued for {url} (got: {sorted(c.name for c in cookies)})"
+            f"no cf_clearance scoped to {host} "
+            f"(got: {sorted((c.name, c.domain) for c in cookies)})"
         )
 
     logger.info(
@@ -147,9 +259,42 @@ async def mint(url: str, timeout: int) -> MintResponse:
     )
 
 
+async def fetch(url: str, timeout: int) -> FetchResponse:
+    """Fetch a page through the browser, clearing any challenge first.
+
+    This exists because cf_clearance cannot be reused by an ordinary HTTP client.
+    Cloudflare binds the cookie to the issuing TLS fingerprint, and the patched
+    Firefox 151 ClientHello has no equivalent in uTLS (whose newest Firefox profile
+    is 120) — measured JA3, JA4 and HTTP/2 SETTINGS all differ. Fetching in-browser
+    removes fingerprint matching from the problem entirely.
+    """
+    budget = Budget(timeout)
+
+    async with session() as (page, _context):
+        seen_ua = _watch_user_agent(page)
+        solved = await _open(page, url, budget)
+
+        html = await page.content()
+        user_agent = await _resolve_user_agent(page, seen_ua)
+        final_url = page.url
+
+    logger.info(
+        "fetched %s in %dms (%d bytes, solved=%s)", url, budget.elapsed_ms(), len(html), solved
+    )
+
+    return FetchResponse(
+        solved=solved,
+        html=html,
+        final_url=final_url,
+        user_agent=user_agent,
+        elapsed_ms=budget.elapsed_ms(),
+    )
+
+
 async def probe_user_agent(url: str = "https://example.com/", timeout: int = 45) -> str:
     """Launch a browser and report its User-Agent. Used by /health as a real end-to-end check."""
     budget = Budget(timeout)
-    async with session() as (page, _solver, _context):
+    async with session() as (page, _context):
+        seen_ua = _watch_user_agent(page)
         await page.goto(url, wait_until="domcontentloaded", timeout=budget.remaining_ms())
-        return await page.evaluate("navigator.userAgent")
+        return await _resolve_user_agent(page, seen_ua)

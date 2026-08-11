@@ -54,8 +54,26 @@ class Budget:
 
 class Session(NamedTuple):
     page: Page
-    solver: ClickSolver
     context: BrowserContext
+
+
+@asynccontextmanager
+async def click_solver(page: Page) -> AsyncGenerator[ClickSolver]:
+    """Construct a ClickSolver only when one is actually needed.
+
+    Entering ClickSolver installs handlers on the page, and measurement showed that
+    doing so eagerly interferes with the non-interactive interstitial: with the solver
+    attached the challenge stopped clearing on its own and every request degraded into
+    five failed click attempts. Since this challenge type has no widget to click, the
+    solver is now built lazily and only as a fallback.
+    """
+    async with ClickSolver(
+        framework=FrameworkType.PLAYWRIGHT,
+        page=page,
+        max_attempts=MAX_ATTEMPTS,
+        attempt_delay=1,
+    ) as solver:
+        yield solver
 
 
 async def _block_media(route: Route) -> None:
@@ -92,10 +110,4 @@ async def session() -> AsyncGenerator[Session]:
             if BLOCK_MEDIA:
                 await page.route("**/*", _block_media)
 
-            async with ClickSolver(
-                framework=FrameworkType.PLAYWRIGHT,
-                page=page,
-                max_attempts=MAX_ATTEMPTS,
-                attempt_delay=1,
-            ) as solver:
-                yield Session(page, solver, context)
+            yield Session(page, context)

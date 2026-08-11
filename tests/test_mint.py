@@ -10,7 +10,7 @@ import pytest
 
 from minter.browser import Budget
 from minter.models import Cookie, MintRequest
-from minter.solve import _has_clearance
+from minter.solve import _has_clearance, domain_matches
 
 
 def test_budget_counts_down():
@@ -45,19 +45,37 @@ def test_cookie_ignores_unknown_playwright_fields():
 
 
 class _FakeContext:
-    def __init__(self, names):
-        self._names = names
+    def __init__(self, pairs):
+        self._pairs = pairs
 
     async def cookies(self):
-        return [{"name": n} for n in self._names]
+        return [{"name": n, "domain": d} for n, d in self._pairs]
 
 
-async def test_has_clearance_detects_cookie():
-    assert await _has_clearance(_FakeContext(["cf_clearance", "other"]))
+def test_domain_matches_covers_subdomains():
+    assert domain_matches(".1337x.to", "1337x.to")
+    assert domain_matches("1337x.to", "1337x.to")
+    assert domain_matches(".1337x.to", "www.1337x.to")
+
+
+def test_domain_matches_rejects_other_hosts():
+    assert not domain_matches(".cloudflare.com", "1337x.to")
+    assert not domain_matches(".1337x.to", "notx1337x.to")
+
+
+async def test_has_clearance_detects_host_cookie():
+    ctx = _FakeContext([("cf_clearance", ".1337x.to"), ("other", "x.com")])
+    assert await _has_clearance(ctx, "1337x.to")
+
+
+async def test_has_clearance_ignores_cloudflare_scoped_cookie():
+    """The bug that made mints succeed with a useless cookie: name-only matching."""
+    ctx = _FakeContext([("cf_clearance", ".cloudflare.com"), ("cf_chl_rc_ni", "1337x.to")])
+    assert not await _has_clearance(ctx, "1337x.to")
 
 
 async def test_has_clearance_false_without_cookie():
-    assert not await _has_clearance(_FakeContext(["__cf_bm"]))
+    assert not await _has_clearance(_FakeContext([("__cf_bm", ".1337x.to")]), "1337x.to")
 
 
 @pytest.mark.live

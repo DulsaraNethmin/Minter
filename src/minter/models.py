@@ -51,6 +51,31 @@ class MintResponse(BaseModel):
     final_url: str
 
 
+class FetchRequest(BaseModel):
+    url: str = Field(
+        pattern=r"^https?://",
+        description="Page to fetch through the browser, clearing any challenge first.",
+        examples=["https://1337x.to/search/Interstellar/1/"],
+    )
+    timeout: int = Field(default=DEFAULT_TIMEOUT, ge=5, le=300)
+
+
+class FetchResponse(BaseModel):
+    """HTML retrieved through the browser.
+
+    Needed because a cf_clearance cookie cannot be reused by an ordinary HTTP client:
+    Cloudflare binds it to the issuing TLS fingerprint, and no off-the-shelf Go uTLS
+    profile reproduces the patched Firefox 151 ClientHello. Fetching in-browser
+    sidesteps fingerprint matching entirely.
+    """
+
+    solved: bool
+    html: str
+    final_url: str
+    user_agent: str
+    elapsed_ms: int
+
+
 class HealthResponse(BaseModel):
     ok: bool
     user_agent: str

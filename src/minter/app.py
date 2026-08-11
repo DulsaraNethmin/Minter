@@ -6,8 +6,14 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from minter.config import configure_logging
-from minter.models import HealthResponse, MintRequest, MintResponse
-from minter.solve import NoClearanceError, mint, probe_user_agent
+from minter.models import (
+    FetchRequest,
+    FetchResponse,
+    HealthResponse,
+    MintRequest,
+    MintResponse,
+)
+from minter.solve import NoClearanceError, fetch, mint, probe_user_agent
 
 logger = configure_logging()
 
@@ -43,6 +49,24 @@ async def mint_endpoint(req: MintRequest) -> MintResponse:
         ) from exc
     except PlaywrightError as exc:
         logger.exception("browser error minting %s", req.url)
+        raise HTTPException(status_code=502, detail=f"browser error: {exc}") from exc
+
+
+@app.post("/fetch", response_model=FetchResponse)
+async def fetch_endpoint(req: FetchRequest) -> FetchResponse:
+    """Fetch a page through the browser, clearing any challenge first.
+
+    Use this rather than /mint when the caller cannot reproduce the browser's TLS
+    fingerprint. Cloudflare binds cf_clearance to the issuing JA3, and no off-the-shelf
+    uTLS profile matches the patched Firefox 151 — so a reused cookie is rejected.
+    """
+    try:
+        return await fetch(req.url, req.timeout)
+    except (PlaywrightTimeout, TimeoutError) as exc:
+        logger.warning("fetch timed out for %s", req.url)
+        raise HTTPException(status_code=408, detail=f"timed out after {req.timeout}s") from exc
+    except PlaywrightError as exc:
+        logger.exception("browser error fetching %s", req.url)
         raise HTTPException(status_code=502, detail=f"browser error: {exc}") from exc
 
 
