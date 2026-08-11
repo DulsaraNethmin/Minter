@@ -30,6 +30,9 @@ _POLL_S = 0.5
 # Bounded wait after a click attempt. An unclearable challenge should fail fast
 # rather than consume the caller's whole budget.
 _POST_CLICK_WAIT_S = 15.0
+# Grace period after navigation for an interstitial to render before we judge
+# whether one is present. Without it, detection races the challenge.
+_APPEAR_S = 1.5
 
 
 class NoClearanceError(RuntimeError):
@@ -40,34 +43,37 @@ class NoClearanceError(RuntimeError):
 # reliable signal, the selectors cover the case where the title has already flipped
 # but the challenge frame is still mounted.
 _CHALLENGE_TITLES = {"just a moment...", "just a moment", "attention required!"}
-# Only containers that belong to the interstitial itself. Notably NOT
-# `script[src*='challenge-platform']` — Cloudflare leaves that telemetry script on
-# pages that have already cleared, so matching it reports a challenge forever.
-_CHALLENGE_SELECTORS = (
-    "#challenge-running",
-    "#challenge-form",
-    "#cf-challenge-running",
-)
+# Locale-independent markers emitted only while a challenge is running. Measured
+# against real pages: present 7x/3x on an interstitial, 0x once cleared. Notably
+# NOT "challenge-platform" — Cloudflare leaves that telemetry script on pages that
+# have already cleared, so matching it reports a challenge forever.
+_CHALLENGE_MARKERS = ("cf_chl_opt", "__cf_chl")
 
 
 async def detect_challenge(page: Page) -> bool:
-    """True when the page is showing a Cloudflare interstitial rather than content."""
-    try:
-        title = (await page.title()).strip().lower()
-    except Exception:  # noqa: BLE001 - a detached page is simply not a challenge
-        title = ""
+    """True when the page is showing a Cloudflare interstitial rather than content.
 
-    if title in _CHALLENGE_TITLES:
+    Markers are checked before the title because the title is English-only: with
+    BROWSER_LOCALE=auto the browser adopts the exit IP's language, so a non-English
+    exit renders "Un momento…" and title matching silently fails. `cf_chl_opt` and
+    `__cf_chl` are emitted regardless of locale, and measurement confirms they are
+    absent from cleared pages (unlike `challenge-platform`, which lingers).
+
+    Failures to read the document mean it is mid-replacement, which is exactly what
+    a challenge does — so those count as "challenged", never as "clear".
+    """
+    try:
+        html = (await page.content()).lower()
+    except Exception:  # noqa: BLE001 - document being replaced; assume still challenged
         return True
 
-    for selector in _CHALLENGE_SELECTORS:
-        try:
-            if await page.locator(selector).count() > 0:
-                return True
-        except Exception:  # noqa: BLE001 - navigation mid-check
-            continue
+    if any(marker in html for marker in _CHALLENGE_MARKERS):
+        return True
 
-    return False
+    try:
+        return (await page.title()).strip().lower() in _CHALLENGE_TITLES
+    except Exception:  # noqa: BLE001 - same reasoning as above
+        return True
 
 
 def domain_matches(domain: str, host: str) -> bool:
@@ -164,14 +170,28 @@ async def _goto(page, url: str, budget: Budget, referer: str | None = None) -> N
             )
 
 
+async def _settle(page, budget: Budget, max_s: float = 10.0) -> None:
+    """Wait for the document to finish loading, bounded by the budget."""
+    with contextlib.suppress(Exception):
+        await page.wait_for_load_state(
+            "load", timeout=min(max_s * 1000, budget.remaining_ms())
+        )
+
+
 async def _goto_and_clear(
     page, url: str, budget: Budget, referer: str | None = None
 ) -> bool:
     """Navigate to `url` and clear any interstitial. Returns whether one was present."""
     await _goto(page, url, budget, referer)
 
+    # Checking for the interstitial the instant goto() returns races it: the
+    # challenge often has not rendered yet, so detection reports "clear" and the
+    # caller receives a half-built transition document. Give it a moment to appear.
+    await asyncio.sleep(_APPEAR_S)
+
     if not await detect_challenge(page):
         logger.info("no challenge at %s", url)
+        await _settle(page, budget)
         return False
 
     logger.info("interstitial at %s — waiting for it to clear", url)
@@ -193,6 +213,10 @@ async def _goto_and_clear(
 
     if await detect_challenge(page):
         logger.warning("gave up on %s — still showing the interstitial", url)
+    else:
+        # The handover to the real document is a fresh load; wait for it or the
+        # caller gets the transition page instead of the content.
+        await _settle(page, budget)
     return True
 
 
