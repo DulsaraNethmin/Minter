@@ -224,10 +224,11 @@ async def mint(url: str, timeout: int) -> MintResponse:
     Raises NoClearanceError when the page settles without a cf_clearance cookie —
     an empty success would be indistinguishable from a working mint to the caller.
     """
-    budget = Budget(timeout)
     host = urlparse(url).hostname or ""
 
     async with session() as (page, context):
+        # Clock starts once we hold the browser, not while queued for it.
+        budget = Budget(timeout)
         seen_ua = _watch_user_agent(page)
         solved = await _open(page, url, budget)
 
@@ -268,9 +269,11 @@ async def fetch(url: str, timeout: int) -> FetchResponse:
     is 120) — measured JA3, JA4 and HTTP/2 SETTINGS all differ. Fetching in-browser
     removes fingerprint matching from the problem entirely.
     """
-    budget = Budget(timeout)
-
     async with session() as (page, _context):
+        # Start the clock only once we hold the browser. Creating the budget before
+        # entering session() charged queued callers for time spent waiting on the
+        # lock, so a request behind a slow one could 408 without ever running.
+        budget = Budget(timeout)
         seen_ua = _watch_user_agent(page)
         solved = await _open(page, url, budget)
 
@@ -293,8 +296,8 @@ async def fetch(url: str, timeout: int) -> FetchResponse:
 
 async def probe_user_agent(url: str = "https://example.com/", timeout: int = 45) -> str:
     """Launch a browser and report its User-Agent. Used by /health as a real end-to-end check."""
-    budget = Budget(timeout)
     async with session() as (page, _context):
+        budget = Budget(timeout)
         seen_ua = _watch_user_agent(page)
         await page.goto(url, wait_until="domcontentloaded", timeout=budget.remaining_ms())
         return await _resolve_user_agent(page, seen_ua)
