@@ -12,6 +12,13 @@ POST /fetch  {"url": "https://example.com/page"}  →  {"html": "...", "solved":
 POST /mint   {"url": "https://example.com/"}      →  {"cookies": [...], "user_agent": "..."}
 ```
 
+> **On the name.** This started out as a cookie *minter*: obtain `cf_clearance`
+> once, then replay it cheaply from an ordinary HTTP client. Measurement killed
+> that plan — Cloudflare binds the cookie to a TLS fingerprint no off-the-shelf
+> client reproduces (see [below](#why-the-browser-runs-per-request)) — so `/fetch`
+> became the endpoint that works and `/mint` stayed for callers who can match the
+> fingerprint. The name is a fossil of the original idea, kept because it is short.
+
 ---
 
 ## How it works
