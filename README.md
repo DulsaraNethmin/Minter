@@ -1,7 +1,18 @@
 # minter
 
+[![ci](https://github.com/DulsaraNethmin/Minter/actions/workflows/ci.yml/badge.svg)](https://github.com/DulsaraNethmin/Minter/actions/workflows/ci.yml)
+[![release](https://github.com/DulsaraNethmin/Minter/actions/workflows/release.yml/badge.svg)](https://github.com/DulsaraNethmin/Minter/actions/workflows/release.yml)
+[![image](https://img.shields.io/badge/ghcr.io-dulsaranethmin%2Fminter-2496ED?logo=docker&logoColor=white)](https://github.com/DulsaraNethmin/Minter/pkgs/container/minter)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 A small service that gets you past Cloudflare's browser challenge — either as a
 **clearance cookie** or as the **rendered HTML** of the page you wanted.
+
+> **📦 Get the image** — [`ghcr.io/dulsaranethmin/minter`](https://github.com/DulsaraNethmin/Minter/pkgs/container/minter) · `linux/amd64` · `linux/arm64`
+>
+> ```bash
+> docker pull ghcr.io/dulsaranethmin/minter:latest
+> ```
 
 ```
 POST /fetch  {"url": "https://example.com/page"}  →  {"html": "...", "solved": true}

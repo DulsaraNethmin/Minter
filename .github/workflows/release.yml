@@ -8,7 +8,10 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ${{ github.repository_owner }}/minter
+# IMAGE is not set here: github.repository_owner preserves the account's casing
+# ("DulsaraNethmin"), and container refs must be lowercase. Each job derives it in
+# a step instead, so forks with any casing work too. metadata-action lowercases
+# `images:` on its own, but the raw `outputs:` string below does not.
 
 concurrency:
   group: release-${{ github.ref }}
@@ -57,6 +60,9 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve image name (refs must be lowercase)
+        run: echo "IMAGE=$(echo "$GITHUB_REPOSITORY_OWNER" | tr "[:upper:]" "[:lower:]")/minter" >> "$GITHUB_ENV"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -117,6 +123,9 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Resolve image name (refs must be lowercase)
+        run: echo "IMAGE=$(echo "$GITHUB_REPOSITORY_OWNER" | tr "[:upper:]" "[:lower:]")/minter" >> "$GITHUB_ENV"
+
       - uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
