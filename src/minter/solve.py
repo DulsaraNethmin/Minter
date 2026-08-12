@@ -10,6 +10,7 @@ clearance, and reach for the ClickSolver only if waiting stalls.
 
 import asyncio
 import contextlib
+import re
 from urllib.parse import urlparse
 
 from playwright.async_api import BrowserContext, Page
@@ -37,6 +38,27 @@ _APPEAR_S = 1.5
 
 class NoClearanceError(RuntimeError):
     """The page settled but Cloudflare issued no cf_clearance cookie."""
+
+
+class ChallengeNotClearedError(RuntimeError):
+    """The interstitial was still on screen when the budget ran out."""
+
+
+async def challenge_kind(page: Page) -> str:
+    """Best-effort name for the challenge blocking us, for error messages.
+
+    Cloudflare states it in `cType` on the challenge page: "non-interactive" clears
+    itself, "interactive" needs a Turnstile widget clicked and is a different beast.
+    """
+    try:
+        html = await page.content()
+    except Exception:  # noqa: BLE001
+        return "unknown"
+    m = re.search(r"cType:\s*'([^']+)'", html)
+    kind = m.group(1) if m else "unknown"
+    if "cf-turnstile-response" in html or "challenges.cloudflare.com/turnstile" in html:
+        kind += " (turnstile widget)"
+    return kind
 
 
 # Cloudflare's non-interactive interstitial. Matched loosely: the title is the most
@@ -299,11 +321,22 @@ async def fetch(url: str, timeout: int) -> FetchResponse:
         # lock, so a request behind a slow one could 408 without ever running.
         budget = Budget(timeout)
         seen_ua = _watch_user_agent(page)
-        solved = await _open(page, url, budget)
+        challenged = await _open(page, url, budget)
+
+        # `solved` must mean cleared, not merely "a challenge appeared". Returning
+        # the interstitial with solved=true made every failure look like a success.
+        still_blocked = await detect_challenge(page)
+        if challenged and still_blocked:
+            kind = await challenge_kind(page)
+            raise ChallengeNotClearedError(
+                f"challenge not cleared for {url} (cType={kind}). "
+                f"Interactive Turnstile is not solvable by this service."
+            )
 
         html = await page.content()
         user_agent = await _resolve_user_agent(page, seen_ua)
         final_url = page.url
+        solved = challenged
 
     logger.info(
         "fetched %s in %dms (%d bytes, solved=%s)", url, budget.elapsed_ms(), len(html), solved

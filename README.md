@@ -121,10 +121,20 @@ What varies is not the site but the **challenge type**:
 | Challenge | Supported | Notes |
 |---|:--:|---|
 | Non-interactive interstitial (*"Just a moment…"*) | ✅ | The common case. Clears passively in ~3–8 s |
-| Turnstile (interactive checkbox) | ⚠️ | `ClickSolver` fallback exists but is untested here |
+| Interactive Turnstile | ❌ | Tested against `ext.to` and it does not clear. Returns **502** naming the type |
 | Managed challenge with a real CAPTCHA | ❌ | Needs a paid API solver; not wired up |
 | Hard block (Error 1020, IP ban) | ❌ | Not a challenge — nothing to solve |
 | DataDome / PerimeterX / Akamai | ❌ | Different vendors entirely |
+
+Cloudflare states which one you are facing in `cType` on the challenge page:
+`non-interactive` clears itself and works here; `interactive` mounts a Turnstile
+widget and does not. When a challenge fails to clear, the 502 detail reports the
+`cType` it saw, so you can tell "unsupported challenge" apart from "something broke":
+
+```
+502  challenge not cleared for https://ext.to/… (cType=interactive (turnstile widget)).
+     Interactive Turnstile is not solvable by this service.
+```
 
 Detection is deliberately locale-independent. It keys on the `cf_chl_opt` and
 `__cf_chl` markers rather than the page title, because with `BROWSER_LOCALE=auto`
@@ -149,7 +159,7 @@ Fetch a page, clearing any challenge first. This is what most callers want.
 
 // response
 {
-  "solved": true,          // a challenge was present and cleared
+  "solved": true,          // a challenge was present AND cleared
   "html": "<!DOCTYPE html>…",
   "final_url": "https://example.com/search/thing/1/",
   "user_agent": "Mozilla/5.0 (Windows NT 10.0; …) Firefox/151.0",
@@ -172,7 +182,8 @@ present the same TLS fingerprint — see the table above.
 ```
 
 Returns **502** if no `cf_clearance` scoped to the target host was issued, and
-**408** if the timeout budget runs out. A cookie scoped to `.cloudflare.com` does
+**408** if the timeout budget runs out. `/fetch` likewise returns **502** rather
+than handing back an uncleared interstitial as a 200. A cookie scoped to `.cloudflare.com` does
 not count — that one is always present and is useless for the target site.
 
 ### `GET /health`

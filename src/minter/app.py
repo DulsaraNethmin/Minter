@@ -13,13 +13,19 @@ from minter.models import (
     MintRequest,
     MintResponse,
 )
-from minter.solve import NoClearanceError, fetch, mint, probe_user_agent
+from minter.solve import (
+    ChallengeNotClearedError,
+    NoClearanceError,
+    fetch,
+    mint,
+    probe_user_agent,
+)
 
 logger = configure_logging()
 
 app = FastAPI(
     title="minter",
-    description="Mints Cloudflare clearance cookies. Replaces flaresolverr and byparr.",
+    description="Mints Cloudflare clearance cookies.",
     version="0.1.0",
 )
 
@@ -28,6 +34,9 @@ app = FastAPI(
 async def root() -> RedirectResponse:
     return RedirectResponse("/docs")
 
+@app.get("/version", include_in_schema=False)
+async def version() -> HealthResponse:
+    return HealthResponse(ok=True, user_agent="minter")
 
 @app.post("/mint", response_model=MintResponse)
 async def mint_endpoint(req: MintRequest) -> MintResponse:
@@ -62,6 +71,10 @@ async def fetch_endpoint(req: FetchRequest) -> FetchResponse:
     """
     try:
         return await fetch(req.url, req.timeout)
+    except ChallengeNotClearedError as exc:
+        # Do not hand back the interstitial as a 200; the caller wanted the page.
+        logger.warning("%s", exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except (PlaywrightTimeout, TimeoutError) as exc:
         logger.warning("fetch timed out for %s", req.url)
         raise HTTPException(status_code=408, detail=f"timed out after {req.timeout}s") from exc
