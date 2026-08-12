@@ -1,0 +1,7 @@
+# Contributor override: build from source instead of pulling the published image.
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up --build
+services:
+  minter:
+    build: .
+    image: minter:dev

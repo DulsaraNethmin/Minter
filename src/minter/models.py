@@ -78,5 +78,7 @@ class FetchResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     ok: bool
+    # Reported so a bug report names the running build without guesswork.
+    version: str
     user_agent: str
     detail: dict[str, Any] = Field(default_factory=dict)

@@ -12,6 +12,46 @@ POST /fetch  {"url": "https://example.com/page"}  →  {"html": "...", "solved":
 POST /mint   {"url": "https://example.com/"}      →  {"cookies": [...], "user_agent": "..."}
 ```
 
+## Quick start
+
+```bash
+docker run --rm -p 8191:8191 --shm-size=512m ghcr.io/dulsaranethmin/minter:latest
+```
+
+```bash
+curl -s -X POST localhost:8191/fetch \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://example.com/"}' | jq '{solved, elapsed_ms}'
+```
+
+Or with Compose — `compose.yaml` pulls the published image, so nothing needs building:
+
+```bash
+docker compose up -d
+```
+
+Three things worth knowing before you hit them:
+
+- **`--shm-size=512m` is required.** Docker's 64 MB default is not enough for Firefox, and the
+  failure looks like a random browser crash rather than a configuration problem.
+- **The image is ~2.2 GB.** Firefox accounts for 564 MB, its system libraries 596 MB, and the GeoIP
+  database 119 MB. That is the floor for shipping a real browser, not bloat waiting to be trimmed.
+- **Do not expose port 8191 to the internet.** These endpoints fetch any URL they are given, from
+  your IP, with no authentication. Bind it to a private network.
+
+### Tags and platforms
+
+| Tag | What it is |
+|---|---|
+| `latest` | The most recent release |
+| `0.1.0`, `0.1` | Pinned release |
+| `edge` | Latest commit on `main` — may be broken |
+| `sha-<short>` | An exact commit |
+
+Built for **`linux/amd64`** and **`linux/arm64`**. There is no 32-bit ARM build:
+`invisible-playwright` publishes only `linux-x86_64` and `linux-arm64` Firefox assets, so older
+32-bit Pis cannot run this at all.
+
 > **On the name.** This started out as a cookie *minter*: obtain `cf_clearance`
 > once, then replay it cheaply from an ordinary HTTP client. Measurement killed
 > that plan — Cloudflare binds the cookie to a TLS fingerprint no off-the-shelf
@@ -188,28 +228,26 @@ not count — that one is always present and is useless for the target site.
 
 ### `GET /health`
 
-Drives a real browser end to end. Slow by design; not a liveness ping.
+Drives a real browser end to end, returning `{"ok": true, "version": "0.1.0", "user_agent": "…"}`.
+Slow by design; not a liveness ping. Quote the `version` in bug reports.
 
 ---
 
-## Running it
+## Running from source
 
 ```bash
 uv sync
 uv run python main.py          # http://localhost:8191
 ```
 
-Docker:
+Building the image instead of pulling it:
 
 ```bash
-docker compose up --build
+docker compose -f compose.yaml -f compose.dev.yaml up --build
 ```
 
-The image is ~2.2 GB, almost entirely Firefox (564 MB) plus its system libraries
-(596 MB) and a GeoIP database (119 MB). It idles at ~125 MB RSS and peaks around
-450 MB while a browser is running.
-
-Interactive API docs are at `/docs`.
+Interactive API docs are at `/docs`. The container idles at ~125 MB RSS and peaks
+around 450 MB while a browser is running.
 
 ### A quick search example
 
@@ -287,6 +325,26 @@ uv run pytest                 # all tests, including one live 1337x fetch
 uv run pytest -m 'not live'   # unit tests only, no browser
 uv run ruff check .
 ```
+
+CI runs lint and the unit tests. The `live` test is deliberately excluded there — it
+drives a real browser against a third-party site, so it stays a local pre-release check.
+
+### Cutting a release
+
+The version is declared in two places and CI fails the release if a tag disagrees with
+either, so bump both:
+
+```bash
+# pyproject.toml   version = "0.2.0"
+# src/minter/__init__.py   __version__ = "0.2.0"
+
+uv run pytest                 # including the live test
+git commit -am "release: v0.2.0"
+git tag v0.2.0 && git push --follow-tags
+```
+
+Pushing the tag builds `linux/amd64` and `linux/arm64` on native runners and publishes
+`0.2.0`, `0.2` and `latest`. Pushes to `main` publish `edge`.
 
 ---
 

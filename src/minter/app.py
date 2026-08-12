@@ -5,6 +5,7 @@ from fastapi.responses import RedirectResponse
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
+from minter import __version__
 from minter.config import configure_logging
 from minter.models import (
     FetchRequest,
@@ -26,7 +27,7 @@ logger = configure_logging()
 app = FastAPI(
     title="minter",
     description="Mints Cloudflare clearance cookies.",
-    version="0.1.0",
+    version=__version__,
 )
 
 
@@ -91,4 +92,4 @@ async def health() -> HealthResponse:
     except Exception as exc:  # noqa: BLE001 - any failure means unhealthy
         logger.exception("health check failed")
         raise HTTPException(status_code=503, detail=f"browser unavailable: {exc}") from exc
-    return HealthResponse(ok=True, user_agent=ua)
+    return HealthResponse(ok=True, version=__version__, user_agent=ua)

@@ -3,6 +3,12 @@
 # Playwright cannot install Firefox deps. Byparr hit the same wall.
 FROM ubuntu:24.04
 
+# org.opencontainers.image.source is what links the GHCR package back to this repo,
+# giving it a README and a source link on the package page.
+LABEL org.opencontainers.image.source="https://github.com/DulsaraNethmin/Minter" \
+      org.opencontainers.image.description="Gets you past Cloudflare's browser challenge — as a clearance cookie or the rendered page." \
+      org.opencontainers.image.licenses="MIT"
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

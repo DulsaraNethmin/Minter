@@ -1,7 +1,6 @@
 services:
   minter:
-    build: .
-    image: minter:latest
+    image: ghcr.io/dulsaranethmin/minter:latest
     container_name: minter
     restart: unless-stopped
 
@@ -13,10 +12,14 @@ services:
       # BROWSER_LOCALE defaults to "auto", deriving from the exit IP. A locale that
       # disagrees with the exit IP is itself a detection signal.
 
-    # Published only for local development. On the Pi this is removed — nothing
-    # outside the `media` network should reach a browser-driving endpoint.
+    # Remove this when running alongside the service that consumes it — nothing
+    # outside your own network should reach an endpoint that fetches arbitrary URLs.
     ports:
       - "8191:8191"
 
-    # Firefox needs more than Docker's default 64 MB of shared memory.
+    # Required. Firefox needs more than Docker's default 64 MB of shared memory,
+    # and the failure without it looks like a random browser crash.
     shm_size: 512mb
+
+# Building from source instead of pulling:
+#   docker compose -f compose.yaml -f compose.dev.yaml up --build
