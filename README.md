@@ -3,10 +3,6 @@
 A small service that gets you past Cloudflare's browser challenge — either as a
 **clearance cookie** or as the **rendered HTML** of the page you wanted.
 
-It is a deliberately narrow alternative to [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr)
-and [Byparr](https://github.com/ThePhaseless/Byparr): two endpoints, no proxy
-protocol, no compatibility envelope.
-
 ```
 POST /fetch  {"url": "https://example.com/page"}  →  {"html": "...", "solved": true}
 POST /mint   {"url": "https://example.com/"}      →  {"cookies": [...], "user_agent": "..."}
